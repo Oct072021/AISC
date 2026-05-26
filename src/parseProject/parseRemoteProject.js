@@ -45,21 +45,40 @@ function parseGithubUrl(url) {
   }
 }
 
-async function getPackageJsonUrl(gitInfo) {
+async function getRefPath(gitInfo) {
   let { owner, repo, path } = gitInfo;
   if (path.startsWith('/tree/')) {
     const pathParts = path.split('/').filter(Boolean);
-    path = `tags/${pathParts[1]}`;
+    return { owner, repo, ref: `tags/${pathParts[1]}` };
   } else {
     const url = `https://api.github.com/repos/${owner}/${repo}`;
     const info = await fetch(url).then((resp) => resp.json());
-    path = `heads/${info.default_branch}`;
+    return { owner, repo, ref: `heads/${info.default_branch}` };
   }
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${path}/package.json`;
+}
+
+function getRawUrl(owner, repo, ref, fileName) {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${fileName}`;
+}
+
+/**
+ * 获取远程仓库中指定文件的内容
+ * @param {string} githubUrl GitHub 仓库 URL
+ * @param {string} fileName 文件名，如 '.npmrc'、'yarn.lock'
+ * @returns {Promise<string|null>} 文件内容，不存在则返回 null
+ */
+export async function getRemoteFileContent(githubUrl, fileName) {
+  const gitInfo = parseGithubUrl(githubUrl);
+  const { owner, repo, ref } = await getRefPath(gitInfo);
+  const url = getRawUrl(owner, repo, ref, fileName);
+  const resp = await fetch(url);
+  if (!resp.ok) return null;
+  return await resp.text();
 }
 
 export async function parseRemoteProject(githubUrl) {
   const gitInfo = parseGithubUrl(githubUrl);
-  const packgeJsonUrl = await getPackageJsonUrl(gitInfo);
-  return await fetch(packgeJsonUrl).then((resp) => resp.json());
+  const { owner, repo, ref } = await getRefPath(gitInfo);
+  const url = getRawUrl(owner, repo, ref, 'package.json');
+  return await fetch(url).then((resp) => resp.json());
 }

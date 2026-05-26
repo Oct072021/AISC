@@ -24,10 +24,16 @@ server.registerTool(
         .describe(
           '保存审计结果的路径，传递当前工程的根路径下的工程明audit.md，如果没有当前工程，则传递桌面路径下的audit.md（注意，桌面路径必须传入绝对路径）'
         ),
+      packageManager: z
+        .enum(['npm', 'yarn', 'pnpm'])
+        .optional()
+        .describe(
+          '指定使用的包管理器。如未指定则自动检测，当无法确定或存在歧义时会返回错误提示，届时需向用户确认后重新调用并指定此参数'
+        ),
     },
   },
-  async ({ projectRoot, savePath }) => {
-    await auditPackage(projectRoot, savePath);
+  async ({ projectRoot, savePath, packageManager }) => {
+    await auditPackage(projectRoot, savePath, packageManager);
     return {
       content: [
         {
