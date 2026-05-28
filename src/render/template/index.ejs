@@ -6,3 +6,7 @@
 <% if(audit.summary.total === 0) { %>
 你项目的所有直接依赖和间接依赖都没有发现任何风险漏洞。
 <% } %>
+<% if(options && !options.reused) { %>
+
+> **注意**：当前项目未检测到 lock 文件，本次审计使用 Node <%- options.nodeVersion %> 环境生成依赖树。若该版本与项目实际使用的 Node 版本不一致，审计结果可能存在偏差。建议在项目中安装并提交 lock 文件或切换 Node 版本后重新执行审计。
+<% } %>

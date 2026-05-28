@@ -1,19 +1,22 @@
+// TODO: 支持 Docker 方案，在指定 Node 版本的容器中执行 npm install 和 npm audit，
+//       确保依赖解析结果与项目实际环境一致。
+// TODO: 使用策略模式分别解析不同的 lock 文件（package-lock.json / yarn.lock / pnpm-lock.yaml），
+//       替代当前统一转换为 package-lock.json 的方式。
+
 import fs from 'fs';
 import { join, dirname } from 'path';
 import { runCommand } from '../common/utils.js';
 import { getRemoteFileContent } from '../parseProject/parseRemoteProject.js';
 
-// lock 文件与包管理器的映射
+// lock 文件与包管理器的映射（暂不支持 pnpm）
 const LOCK_FILE_MAP = {
   'package-lock.json': 'npm',
   'yarn.lock': 'yarn',
-  'pnpm-lock.yaml': 'pnpm',
 };
 
 // 各包管理器对应的配置文件
 const CONFIG_FILES = {
   npm: ['.npmrc'],
-  pnpm: ['.npmrc'],
   yarn: ['.npmrc', '.yarnrc', '.yarnrc.yml'],
 };
 
@@ -63,14 +66,14 @@ async function detectRemoteLockFiles(projectRoot) {
 
 /**
  * 从 package.json 的 packageManager 字段解析包管理器名称
- * @returns {string|null} 如 'pnpm'、'yarn'、'npm'，或 null
+ * @returns {string|null} 如 'yarn'、'npm'，或 null
  */
 function parsePackageManagerField(packageJson) {
   const field = packageJson.packageManager;
   if (!field || typeof field !== 'string') return null;
-  // 格式通常为 "pnpm@8.0.0"
+  // 格式通常为 "yarn@3.0.0"
   const name = field.split('@')[0].trim().toLowerCase();
-  if (['npm', 'yarn', 'pnpm'].includes(name)) return name;
+  if (['npm', 'yarn'].includes(name)) return name;
   return null;
 }
 
@@ -79,8 +82,8 @@ function parsePackageManagerField(packageJson) {
  * @param {string} projectRoot 项目根目录或 GitHub URL
  * @param {Object} packageJson 解析后的 package.json
  * @param {string|undefined} specifiedPM 调用方指定的包管理器
- * @returns {Promise<string>} 'npm' | 'yarn' | 'pnpm'
- * @throws {Error} 无法确定时抛出描述性错误
+ * @returns {Promise<string>} 'npm' | 'yarn'
+ * @throws {Error} 多个 lock 文件且无法消歧时抛出错误
  */
 async function detectPackageManager(projectRoot, packageJson, specifiedPM) {
   // 1. 调用方明确指定，直接使用
@@ -97,19 +100,12 @@ async function detectPackageManager(projectRoot, packageJson, specifiedPM) {
 
   // 4. 分析结果
   if (detected.length === 1) {
-    // 唯一 lock 文件，直接使用（如果 packageManager 字段也存在且不同，以 lock 文件为准）
     return detected[0];
   }
 
   if (detected.length === 0) {
-    // 无 lock 文件，尝试使用 packageManager 字段
-    if (fromField) return fromField;
-    // 都没有，抛出错误
-    throw new Error(
-      '未检测到 lock 文件（package-lock.json / yarn.lock / pnpm-lock.yaml），' +
-        '也未在 package.json 中找到 packageManager 字段。\n' +
-        '请在调用时通过 packageManager 参数指定使用的包管理器（npm / yarn / pnpm）。'
-    );
+    // 无 lock 文件，尝试使用 packageManager 字段，否则默认 npm
+    return fromField || 'npm';
   }
 
   // detected.length > 1：多个 lock 文件
@@ -120,7 +116,7 @@ async function detectPackageManager(projectRoot, packageJson, specifiedPM) {
 
   throw new Error(
     `检测到多个 lock 文件：${detected.join('、')}，无法自动确定包管理器。\n` +
-      '请在调用时通过 packageManager 参数指定使用的包管理器（npm / yarn / pnpm）。'
+      '请在调用时通过 packageManager 参数指定使用的包管理器（npm / yarn）。'
   );
 }
 
@@ -150,6 +146,62 @@ async function copyRegistryConfig(projectRoot, workDir, pm) {
   }
 }
 
+/**
+ * 尝试复用项目已有的 package-lock.json
+ * @returns {Promise<boolean>} 是否成功复用
+ */
+async function copyExistingLockFile(projectRoot, workDir) {
+  const isRemote = isRemoteProject(projectRoot);
+  const lockFileName = 'package-lock.json';
+
+  try {
+    if (isRemote) {
+      const content = await getRemoteFileContent(projectRoot, lockFileName);
+      if (content !== null) {
+        await fs.promises.writeFile(join(workDir, lockFileName), content, 'utf8');
+        return true;
+      }
+    } else {
+      const srcPath = join(projectRoot, lockFileName);
+      if (fs.existsSync(srcPath)) {
+        await fs.promises.copyFile(srcPath, join(workDir, lockFileName));
+        return true;
+      }
+    }
+  } catch {
+    // 复制失败，退化为生成
+  }
+  return false;
+}
+
+/**
+ * 尝试复制 yarn.lock 到工作目录（供 npm install 参考）
+ * @returns {Promise<boolean>} 是否成功复制
+ */
+async function copyYarnLockFile(projectRoot, workDir) {
+  const isRemote = isRemoteProject(projectRoot);
+  const lockFileName = 'yarn.lock';
+
+  try {
+    if (isRemote) {
+      const content = await getRemoteFileContent(projectRoot, lockFileName);
+      if (content !== null) {
+        await fs.promises.writeFile(join(workDir, lockFileName), content, 'utf8');
+        return true;
+      }
+    } else {
+      const srcPath = join(projectRoot, lockFileName);
+      if (fs.existsSync(srcPath)) {
+        await fs.promises.copyFile(srcPath, join(workDir, lockFileName));
+        return true;
+      }
+    }
+  } catch {
+    // 复制失败
+  }
+  return false;
+}
+
 // 写入 package.json
 async function writePackageJson(workDir, packageJson) {
   const packageJsonPath = join(workDir, 'package.json');
@@ -172,6 +224,9 @@ async function createLockFile(workDir) {
  * @param {Object} packageJson 解析后的 package.json
  * @param {string} projectRoot 原项目根目录或 GitHub URL
  * @param {string} [packageManager] 可选，指定包管理器
+ * @returns {Promise<{reused: boolean, nodeVersion: string|null}>}
+ *   reused: 是否复用了项目已有的 lock 文件
+ *   nodeVersion: 未复用时，记录当前使用的 Node 版本
  */
 export async function generateLock(workDir, packageJson, projectRoot, packageManager) {
   // 1. 将 package.json 写入工作目录
@@ -180,6 +235,19 @@ export async function generateLock(workDir, packageJson, projectRoot, packageMan
   const pm = await detectPackageManager(projectRoot, packageJson, packageManager);
   // 3. 复制包管理器配置文件（如 .npmrc）
   await copyRegistryConfig(projectRoot, workDir, pm);
-  // 4. 生成 lock 文件（统一用 npm 生成 package-lock.json）
+
+  // 4. 尝试直接复用已有的 package-lock.json
+  const reused = await copyExistingLockFile(projectRoot, workDir);
+  if (reused) {
+    return { reused: true, nodeVersion: null };
+  }
+
+  // 5. 如果是 yarn 项目，先复制 yarn.lock，npm install 时会参考它来生成 package-lock.json
+  if (pm === 'yarn') {
+    await copyYarnLockFile(projectRoot, workDir);
+  }
+
+  // 6. 使用当前环境的 npm 生成 package-lock.json
   await createLockFile(workDir);
+  return { reused: false, nodeVersion: process.version };
 }
