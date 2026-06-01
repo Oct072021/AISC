@@ -15,7 +15,10 @@ const desc = {
  * @param {object} packageJson 包的package.json内容
  * @param {object} options 额外选项
  * @param {boolean} options.reused 是否复用了项目已有的 lock 文件
- * @param {string|null} options.nodeVersion 未复用时使用的 Node 版本
+ * @param {string} options.nodeVersion 当前 Node 版本
+ * @param {string} options.npmVersion 当前 npm 版本
+ * @param {boolean} options.incompatible 复用的 lock 文件是否因 lockfileVersion 不兼容而被丢弃
+ * @param {number|null} options.lockfileVersion 不兼容时的 lockfileVersion
  */
 export async function render(auditResult, packageJson, options = {}) {
   const data = {

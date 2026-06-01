@@ -23,6 +23,13 @@ const CONFIG_FILES = {
 // 统一使用 npm 生成 lock 文件，因为审计阶段固定使用 npm audit，只认 package-lock.json
 const LOCK_COMMAND = 'npm install --package-lock-only --force';
 
+// lockfileVersion 所需的最低 npm 主版本号（新增版本时只需在此追加）
+const MIN_NPM_MAJOR = {
+  1: 1,
+  2: 7,
+  3: 7,
+};
+
 /**
  * 判断项目是本地还是远程
  */
@@ -224,9 +231,12 @@ async function createLockFile(workDir) {
  * @param {Object} packageJson 解析后的 package.json
  * @param {string} projectRoot 原项目根目录或 GitHub URL
  * @param {string} [packageManager] 可选，指定包管理器
- * @returns {Promise<{reused: boolean, nodeVersion: string|null}>}
+ * @returns {Promise<{reused: boolean, nodeVersion: string, npmVersion: string, incompatible: boolean, lockfileVersion: number|null}>}
  *   reused: 是否复用了项目已有的 lock 文件
- *   nodeVersion: 未复用时，记录当前使用的 Node 版本
+ *   nodeVersion: 当前 Node 版本
+ *   npmVersion: 当前 npm 版本
+ *   incompatible: 复用的 lock 文件是否因 lockfileVersion 不兼容而被丢弃
+ *   lockfileVersion: 复用的 lock 文件的 lockfileVersion（不兼容时有值）
  */
 export async function generateLock(workDir, packageJson, projectRoot, packageManager) {
   // 1. 将 package.json 写入工作目录
@@ -236,10 +246,30 @@ export async function generateLock(workDir, packageJson, projectRoot, packageMan
   // 3. 复制包管理器配置文件（如 .npmrc）
   await copyRegistryConfig(projectRoot, workDir, pm);
 
+  // 获取当前环境的 npm 版本（所有场景都需要）
+  const npmVersion = (await runCommand('npm -v', workDir)).trim();
+
   // 4. 尝试直接复用已有的 package-lock.json
   const reused = await copyExistingLockFile(projectRoot, workDir);
   if (reused) {
-    return { reused: true, nodeVersion: null };
+    // 检查 lockfileVersion 兼容性
+    const compat = await checkLockFileCompatibility(workDir, npmVersion);
+    if (!compat.compatible) {
+      // 不兼容，删除 lock 文件，回退到重新生成
+      await fs.promises.unlink(join(workDir, 'package-lock.json'));
+      if (pm === 'yarn') {
+        await copyYarnLockFile(projectRoot, workDir);
+      }
+      await createLockFile(workDir);
+      return {
+        reused: false,
+        nodeVersion: process.version,
+        npmVersion,
+        incompatible: true,
+        lockfileVersion: compat.lockfileVersion,
+      };
+    }
+    return { reused: true, nodeVersion: process.version, npmVersion, incompatible: false, lockfileVersion: null };
   }
 
   // 5. 如果是 yarn 项目，先复制 yarn.lock，npm install 时会参考它来生成 package-lock.json
@@ -249,5 +279,32 @@ export async function generateLock(workDir, packageJson, projectRoot, packageMan
 
   // 6. 使用当前环境的 npm 生成 package-lock.json
   await createLockFile(workDir);
-  return { reused: false, nodeVersion: process.version };
+  return { reused: false, nodeVersion: process.version, npmVersion, incompatible: false, lockfileVersion: null };
+}
+
+/**
+ * 检查已复制的 package-lock.json 的 lockfileVersion 是否与当前 npm 版本兼容
+ * - lockfileVersion 1: 兼容所有 npm 版本
+ * - lockfileVersion 2/3: 需要 npm 7+
+ * @param {string} workDir 工作目录
+ * @param {string} npmVersion 当前 npm 版本字符串
+ * @returns {Promise<{compatible: boolean, lockfileVersion: number|null}>}
+ */
+async function checkLockFileCompatibility(workDir, npmVersion) {
+  try {
+    const lockContent = await fs.promises.readFile(join(workDir, 'package-lock.json'), 'utf8');
+    const lockJson = JSON.parse(lockContent);
+    const lockfileVersion = lockJson.lockfileVersion || 1;
+    const npmMajor = parseInt(npmVersion.split('.')[0], 10);
+
+    // lockfileVersion 2/3 需要 npm 7+
+    const minMajor = MIN_NPM_MAJOR[lockfileVersion] ?? 7;
+    if (npmMajor < minMajor) {
+      return { compatible: false, lockfileVersion };
+    }
+    return { compatible: true, lockfileVersion };
+  } catch {
+    // 无法读取或解析，视为兼容（后续 npm audit 会报错）
+    return { compatible: true, lockfileVersion: null };
+  }
 }

@@ -24,15 +24,15 @@ export async function auditPackage(projectRoot, savePath, packageManager) {
   log('步骤2: 解析项目 - 完成');
 
   log('步骤3: 生成lock文件 - 开始');
-  const { reused, nodeVersion } = await generateLock(workDir, packageJson, projectRoot, packageManager);
-  log(`步骤3: 生成lock文件 - 完成 (reused=${reused})`);
+  const lockResult = await generateLock(workDir, packageJson, projectRoot, packageManager);
+  log(`步骤3: 生成lock文件 - 完成 (reused=${lockResult.reused}, incompatible=${lockResult.incompatible})`);
 
   log('步骤4: 执行审计 - 开始');
   const auditResult = await audit(workDir, packageJson);
   log('步骤4: 执行审计 - 完成');
 
   log('步骤5: 渲染结果 - 开始');
-  const renderedResult = await render(auditResult, packageJson, { reused, nodeVersion });
+  const renderedResult = await render(auditResult, packageJson, lockResult);
   log('步骤5: 渲染结果 - 完成');
 
   log('步骤6: 清理工作目录 - 开始');
