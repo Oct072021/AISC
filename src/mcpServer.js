@@ -3,12 +3,14 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { auditPackage } from './entry/index.js';
 
+// 1. 创建 mcp服务实例
 const server = new McpServer({
   name: 'audit-server',
   title: '前端工程安全审计服务',
   version: '0.1.0',
 });
 
+// 2. 注册工具函数
 server.registerTool(
   'auditPackage',
   {
@@ -45,5 +47,6 @@ server.registerTool(
   }
 );
 
+// 3. 连接传输层（此处使用 stdio 作为通信协议）
 const transport = new StdioServerTransport();
 server.connect(transport);
